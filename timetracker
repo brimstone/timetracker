@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euo pipefail
+
+DB=~/time.db
+
+if [ ! -e $DB ]; then
+	cat <<EOF | sqlite3 $DB
+	create table "events"
+	(id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name varchar(16)
+	);
+	create table "work"
+	(workid INTEGER PRIMARY KEY AUTOINCREMENT,
+	eventid INTEGER,
+	starttime DATETIME,
+	endtime DATETIME
+	);
+	insert into "events" (name) values ("work");
+EOF
+fi
+
+logevent(){
+	eventname="$1"
+	starttime="$2"
+	endtime="$3"
+	eventid=$(echo "select id from events where name=\"$eventname\";" | sqlite3 $DB)
+	echo "logging event \"$eventname\"($eventid) starting at \"$(date -d "@$starttime")\" ending at \"$(date -d "@$endtime")\", lasting $[ $endtime - $starttime ] seconds"
+	echo "insert into \"work\" (eventid, starttime, endtime) VALUES (\"$eventid\", \"$starttime\", \"$endtime\");" | sqlite3 $DB
+}
+
+lasttime="${STARTTIME:-$(date +%s)}"
+
+# TODO trap exiting to log another work event.
+trap "logevent work \"\$lasttime\" \"\$(date +%s)\"" EXIT
+echo "Waiting for screen to lock"
+while true; do
+	sleep 2
+	if ! xscreensaver-command -time 2>&1 | grep -Eq " blanked| locked"; then
+		continue
+	fi
+	logevent "work" "$lasttime" "$(date +%s)"
+	lasttime="$(date +%s)"
+	# get events from events table
+	event=$((echo 'select name from events;' | sqlite3 $DB; echo 'other') | xargs -d "\n" zenity --list --text="select event that happened from $(date +%H:%M)" --column='a' --hide-header 2>/dev/null)
+	if [ "$event" == "other" ]; then	
+		# TODO need to find a better way than simply stripping double quotes
+		event=$(zenity --entry --text "Enter name of new event" 2>/dev/null| sed -e 's/"//')
+		# add entry to entry table for use later
+		cat <<EOF | sqlite3 $DB
+	insert into "events" (name) values ("$event");
+EOF
+	fi
+	logevent "$event" "$lasttime" "$(date +%s)"
+	lasttime="$(date +%s)"
+done
